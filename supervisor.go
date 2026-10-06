@@ -22,13 +22,14 @@ import (
 )
 
 const (
-	defaultXrayBin      = "/usr/local/bin/xray"
-	defaultConfigPath   = "/app/config.json"
-	defaultAssetDir     = "/usr/local/share/xray"
-	defaultXrayMemMB    = 550
-	defaultAetherBin    = "/usr/local/bin/aether"
-	defaultAetherConfig = "/data/aether.toml"
-	defaultAetherScan   = "balanced"
+	defaultXrayBin       = "/usr/local/bin/xray"
+	defaultConfigPath    = "/app/config.json"
+	defaultAssetDir      = "/usr/local/share/xray"
+	defaultXrayMemMB     = 550
+	defaultAetherBin     = "/usr/local/bin/aether"
+	defaultAetherConfig  = "/data/aether.toml"
+	defaultAetherScan    = "balanced"
+	defaultAetherExitLoc = "US"
 
 	defaultLoopbackXH   = "127.0.0.1:18443"
 	defaultLoopbackWS   = "127.0.0.1:18444"
@@ -158,20 +159,21 @@ func (r *processReaper) StartProcess(name string, argv []string, attr *os.ProcAt
 }
 
 type Supervisor struct {
-	binPath      string
-	configPath   string
-	assetDir     string
-	memLimitMB   int
-	maxProcs     int
-	aetherBin    string
-	aetherConfig string
-	aetherScan   string
-	xhAddr       string
-	wsAddr       string
-	trAddr       string
-	warpAddr     string
-	startTimeout time.Duration
-	stopTimeout  time.Duration
+	binPath       string
+	configPath    string
+	assetDir      string
+	memLimitMB    int
+	maxProcs      int
+	aetherBin     string
+	aetherConfig  string
+	aetherScan    string
+	aetherExitLoc string
+	xhAddr        string
+	wsAddr        string
+	trAddr        string
+	warpAddr      string
+	startTimeout  time.Duration
+	stopTimeout   time.Duration
 
 	reaper *processReaper
 
@@ -208,6 +210,7 @@ func NewSupervisor() *Supervisor {
 	aetherBin := getEnv("BERMUDA_AETHER_BIN", defaultAetherBin)
 	aetherConfig := getEnv("AETHER_CONFIG", defaultAetherConfig)
 	aetherScan := getEnv("AETHER_SCAN", defaultAetherScan)
+	aetherExitLoc := getEnv("BERMUDA_AETHER_EXIT_LOC", defaultAetherExitLoc)
 
 	dialer := &net.Dialer{
 		Timeout:   probeDialTimeout,
@@ -226,24 +229,25 @@ func NewSupervisor() *Supervisor {
 	}
 
 	s := &Supervisor{
-		binPath:      bin,
-		configPath:   cfg,
-		assetDir:     assets,
-		memLimitMB:   getEnvInt("BERMUDA_XRAY_MEM_MB", defaultXrayMemMB),
-		maxProcs:     getEnvInt("BERMUDA_XRAY_GOMAXPROCS", 0),
-		aetherBin:    aetherBin,
-		aetherConfig: aetherConfig,
-		aetherScan:   aetherScan,
-		xhAddr:       getEnv("BERMUDA_BACKEND_XH", defaultLoopbackXH),
-		wsAddr:       getEnv("BERMUDA_BACKEND_WS", defaultLoopbackWS),
-		trAddr:       getEnv("BERMUDA_BACKEND_TR", defaultLoopbackTR),
-		warpAddr:     getEnv("BERMUDA_BACKEND_WARP", defaultLoopbackWARP),
-		startTimeout: defaultStartTimeout,
-		stopTimeout:  defaultStopTimeout,
-		reaper:       reaper,
-		runReady:     make(chan struct{}),
-		stopped:      make(chan struct{}),
-		probeDialer:  dialer,
+		binPath:       bin,
+		configPath:    cfg,
+		assetDir:      assets,
+		memLimitMB:    getEnvInt("BERMUDA_XRAY_MEM_MB", defaultXrayMemMB),
+		maxProcs:      getEnvInt("BERMUDA_XRAY_GOMAXPROCS", 0),
+		aetherBin:     aetherBin,
+		aetherConfig:  aetherConfig,
+		aetherScan:    aetherScan,
+		aetherExitLoc: aetherExitLoc,
+		xhAddr:        getEnv("BERMUDA_BACKEND_XH", defaultLoopbackXH),
+		wsAddr:        getEnv("BERMUDA_BACKEND_WS", defaultLoopbackWS),
+		trAddr:        getEnv("BERMUDA_BACKEND_TR", defaultLoopbackTR),
+		warpAddr:      getEnv("BERMUDA_BACKEND_WARP", defaultLoopbackWARP),
+		startTimeout:  defaultStartTimeout,
+		stopTimeout:   defaultStopTimeout,
+		reaper:        reaper,
+		runReady:      make(chan struct{}),
+		stopped:       make(chan struct{}),
+		probeDialer:   dialer,
 	}
 	s.stopGraceNS.Store(int64(defaultStopTimeout))
 	return s
@@ -483,8 +487,12 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 			"--h2",
 			"-4",
 			"--scan", s.aetherScan,
-			"--config", s.aetherConfig,
 		}
+		if s.aetherExitLoc != "" {
+			aetherArgs = append(aetherArgs, "--exit-loc", s.aetherExitLoc)
+		}
+		aetherArgs = append(aetherArgs, "--config", s.aetherConfig)
+
 		var startErr error
 		aetherProc, aetherExitCh, startErr = s.reaper.StartProcess(s.aetherBin, aetherArgs, aetherAttr)
 		_ = aetherStdoutW.Close()
@@ -496,8 +504,8 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 			aetherProc = nil
 			hasAether = false
 		} else {
-			log.Printf("[Supervisor] Aether daemon started pid=%d pgid=%d bind=%s",
-				aetherProc.Pid, aetherProc.Pid, s.warpAddr)
+			log.Printf("[Supervisor] Aether daemon started pid=%d pgid=%d bind=%s exit-loc=%s",
+				aetherProc.Pid, aetherProc.Pid, s.warpAddr, s.aetherExitLoc)
 		}
 	}
 
