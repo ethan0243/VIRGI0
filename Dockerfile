@@ -1,5 +1,6 @@
+# syntax=docker/dockerfile:1
 # ==============================================================================
-# BERMUDA x AETHER Core Gateway - Hardened Production Container
+# BERMUDA x AETHER Core Gateway - All-in-One Self-Contained Container
 # Architecture: Multi-Stage Hybrid (Xray-core + Aether MASQUE Core + Caddy Ingress)
 # Target Environment: Railway Cloud PaaS / GitHub Automated CI/CD
 # ==============================================================================
@@ -11,7 +12,6 @@ FROM debian:bookworm-slim AS builder
 
 ARG TARGETARCH
 
-# نصب ابزارهای ضروری برای دانلود و استخراج بسته‌ها
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /tmp/build
 
-# دانلود و نصب امن باینری‌های رسمی متناسب با معماری پردازنده
 RUN set -eux; \
     ARCH="${TARGETARCH:-amd64}"; \
     case "${ARCH}" in \
@@ -64,7 +63,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     XRAY_LOCATION_ASSET=/usr/local/share/xray \
     AETHER_CONFIG=/data/aether.toml
 
-# نصب نیازمندی‌های زمان اجرا (Runtime Essentials)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
@@ -72,14 +70,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# انتقال باینری‌ها و دیتابیس‌ها از استیج‌های بیلدر
 COPY --from=builder /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=builder /usr/local/share/xray /usr/local/share/xray
 COPY --from=builder /usr/local/bin/aether /usr/local/bin/aether
 COPY --from=caddy-source /usr/bin/caddy /usr/local/bin/caddy
 
-# ساخت دایرکتوری‌های عملیاتی با مجوز دسترسی مناسب
-RUN mkdir -p /etc/xray /data /var/www/html /var/log/gateway \
+RUN mkdir -p /etc/xray /data /var/www/html /var/log/gateway /etc/caddy \
     && chmod -R 777 /data
 
 # ایجاد صفحه وب استاتیک قانونی (Decoy Anti-Probing Asset)
@@ -104,13 +100,144 @@ RUN printf '%s\n' \
 '</body>' \
 '</html>' > /var/www/html/index.html
 
-# کپی فایل کانفیگ فاز ۱ و اسکریپت استارت فاز ۳
-COPY config.json /etc/xray/config.json
-COPY entrypoint.sh /entrypoint.sh
+# ساخت مستقیم و درونی اسکریپت راه‌انداز (Self-Contained Orchestrator)
+RUN cat <<'EOF' > /entrypoint.sh
+#!/usr/bin/env bash
+set -u
+
+export PORT="${PORT:-8080}"
+export AETHER_BIND="${AETHER_BIND:-127.0.0.1:1819}"
+export AETHER_CONFIG="${AETHER_CONFIG:-/data/aether.toml}"
+export AETHER_SCAN="${AETHER_SCAN:-balanced}"
+export AETHER_PROTOCOL="${AETHER_PROTOCOL:-masque}"
+
+CADDY_PID=""
+XRAY_PID=""
+AETHER_PID=""
+
+echo "================================================================================"
+echo "   BERMUDA MASTER KEY x AETHER CLUSTER GATEWAY"
+echo "   Architecture : Chained Outbound (VLESS/Trojan -> WARP MASQUE)"
+echo "   Ingress Port : :${PORT} (Dynamic Railway Binding)"
+echo "   Egress Core  : Aether MASQUE over HTTP/3 / HTTP/2"
+echo "================================================================================"
+
+cleanup() {
+    local exit_code="${1:-0}"
+    echo ""
+    echo "[ORCHESTRATOR] Intercepted termination signal. Initiating graceful shutdown..."
+    trap - SIGTERM SIGINT SIGHUP EXIT
+
+    if [ -n "$CADDY_PID" ] && kill -0 "$CADDY_PID" 2>/dev/null; then
+        echo "[ORCHESTRATOR] Stopping Caddy Ingress (PID: $CADDY_PID)..."
+        kill -TERM "$CADDY_PID" 2>/dev/null || true
+    fi
+
+    if [ -n "$XRAY_PID" ] && kill -0 "$XRAY_PID" 2>/dev/null; then
+        echo "[ORCHESTRATOR] Stopping Xray Core (PID: $XRAY_PID)..."
+        kill -TERM "$XRAY_PID" 2>/dev/null || true
+    fi
+
+    if [ -n "$AETHER_PID" ] && kill -0 "$AETHER_PID" 2>/dev/null; then
+        echo "[ORCHESTRATOR] Stopping Aether MASQUE Daemon (PID: $AETHER_PID)..."
+        kill -TERM "$AETHER_PID" 2>/dev/null || true
+    fi
+
+    wait "$CADDY_PID" 2>/dev/null || true
+    wait "$XRAY_PID" 2>/dev/null || true
+    wait "$AETHER_PID" 2>/dev/null || true
+
+    echo "[ORCHESTRATOR] All child processes safely reaped. Gateway stopped cleanly."
+    exit "$exit_code"
+}
+
+trap 'cleanup 143' SIGTERM
+trap 'cleanup 130' SIGINT
+trap 'cleanup 129' SIGHUP
+
+mkdir -p /etc/caddy /data /var/log/gateway
+
+echo "[ORCHESTRATOR] Synthesizing dynamic reverse-proxy matrix for Port :${PORT}..."
+cat <<CADDYCONF > /etc/caddy/Caddyfile
+{
+    admin off
+    auto_https off
+}
+
+:${PORT} {
+    log {
+        output discard
+    }
+
+    # Ingress Route 1: VLESS WebSocket Pipeline
+    reverse_proxy /api/v1/live* 127.0.0.1:8080
+
+    # Ingress Route 2: Trojan WebSocket Pipeline
+    reverse_proxy /api/v1/gateway* 127.0.0.1:8081
+
+    # Ingress Route 3: VLESS XHTTP Pipeline
+    reverse_proxy /api/v1/sync* 127.0.0.1:8082
+
+    # Decoy Masquerade Asset: Anti-Probing 200 OK Response
+    root * /var/www/html
+    file_server
+}
+CADDYCONF
+
+echo "[ORCHESTRATOR] Spawning Aether MASQUE Core on ${AETHER_BIND}..."
+/usr/local/bin/aether \
+    --bind "${AETHER_BIND}" \
+    --${AETHER_PROTOCOL} \
+    -4 \
+    --scan "${AETHER_SCAN}" \
+    --quick-reconnect \
+    --config "${AETHER_CONFIG}" &
+AETHER_PID=$!
+
+echo "[ORCHESTRATOR] Aether daemon active (PID: ${AETHER_PID})."
+
+echo "[ORCHESTRATOR] Spawning Xray Switching Core (/etc/xray/config.json)..."
+/usr/local/bin/xray run -config /etc/xray/config.json &
+XRAY_PID=$!
+
+echo "[ORCHESTRATOR] Xray core active (PID: ${XRAY_PID})."
+
+echo "[ORCHESTRATOR] Spawning Caddy Edge Ingress Gateway on Port :${PORT}..."
+/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+echo "[ORCHESTRATOR] Caddy ingress active (PID: ${CADDY_PID}). Edge router listening."
+
+echo "[ORCHESTRATOR] Performing non-blocking data-plane probe on ${AETHER_BIND}..."
+(
+    READY=0
+    for i in $(seq 1 20); do
+        if bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/1819" 2>/dev/null; then
+            echo "[HEALTHCHECK] Cloudflare WARP MASQUE Egress Verified (127.0.0.1:1819 is active)."
+            READY=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$READY" -eq 0 ]; then
+        echo "[HEALTHCHECK] WARP initialization taking longer than usual; scanner running in background."
+    fi
+) &
+
+echo "[ORCHESTRATOR] Cluster Gateway online and operational. Monitoring process health..."
+
+SUPERVISOR_STATUS=0
+wait -n "$CADDY_PID" "$XRAY_PID" "$AETHER_PID" || SUPERVISOR_STATUS=$?
+
+echo "[ORCHESTRATOR] Detected termination of core process (Exit Status: ${SUPERVISOR_STATUS})."
+cleanup "${SUPERVISOR_STATUS}"
+EOF
 
 RUN chmod +x /entrypoint.sh
 
-# اکسپوز پورت پیش‌فرض (توسط ریلوی با متغیر PORT همگام می‌شود)
+# کپی تنظیمات سوییچینگ Xray (فاز ۱)
+COPY config.json /etc/xray/config.json
+
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
