@@ -110,9 +110,6 @@ COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
 
-# والیوم ذخیره‌سازی ماندگار هویت کلاینت وارپ
-VOLUME ["/data"]
-
 # اکسپوز پورت پیش‌فرض (توسط ریلوی با متغیر PORT همگام می‌شود)
 EXPOSE 8080
 
