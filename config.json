@@ -16,8 +16,8 @@
   "inbounds": [
     {
       "tag": "vless-ws-in",
-      "listen": "0.0.0.0",
-      "port": 8080,
+      "listen": "127.0.0.1",
+      "port": 10001,
       "protocol": "vless",
       "settings": {
         "clients": [
@@ -56,8 +56,8 @@
     },
     {
       "tag": "trojan-ws-in",
-      "listen": "0.0.0.0",
-      "port": 8081,
+      "listen": "127.0.0.1",
+      "port": 10002,
       "protocol": "trojan",
       "settings": {
         "clients": [
@@ -95,8 +95,8 @@
     },
     {
       "tag": "vless-xhttp-in",
-      "listen": "0.0.0.0",
-      "port": 8082,
+      "listen": "127.0.0.1",
+      "port": 10003,
       "protocol": "vless",
       "settings": {
         "clients": [
