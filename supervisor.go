@@ -21,21 +21,19 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
-// BERMUDA Stealth Gateway NG — Resilient Supervisor Daemon
-// Architecture: Centralized POSIX Subreaper, Event-Driven Wait4 Dispatcher
-// Invariant: Zero External Dependencies, Zero TIME_WAIT, Leak-Free Lifecycle
-// ---------------------------------------------------------------------------
-
 const (
-	defaultXrayBin    = "/usr/local/bin/xray"
-	defaultConfigPath = "/app/config.json"
-	defaultAssetDir   = "/usr/local/share/xray"
-	defaultXrayMemMB  = 550
+	defaultXrayBin      = "/usr/local/bin/xray"
+	defaultConfigPath   = "/app/config.json"
+	defaultAssetDir     = "/usr/local/share/xray"
+	defaultXrayMemMB    = 550
+	defaultAetherBin    = "/usr/local/bin/aether"
+	defaultAetherConfig = "/data/aether.toml"
+	defaultAetherScan   = "balanced"
 
-	defaultLoopbackXH = "127.0.0.1:18443"
-	defaultLoopbackWS = "127.0.0.1:18444"
-	defaultLoopbackTR = "127.0.0.1:18445"
+	defaultLoopbackXH   = "127.0.0.1:18443"
+	defaultLoopbackWS   = "127.0.0.1:18444"
+	defaultLoopbackTR   = "127.0.0.1:18445"
+	defaultLoopbackWARP = "127.0.0.1:1819"
 
 	fastProbeWindow       = 1500 * time.Millisecond
 	fastProbeInterval     = 25 * time.Millisecond
@@ -43,7 +41,7 @@ const (
 	degradedProbeInterval = 250 * time.Millisecond
 	minProbeNowInterval   = 1 * time.Second
 	probeDialTimeout      = 250 * time.Millisecond
-	defaultStartTimeout   = 10 * time.Second
+	defaultStartTimeout   = 15 * time.Second
 	defaultStopTimeout    = 8 * time.Second
 	pipeReadBufferSize    = 64 * 1024
 
@@ -62,6 +60,7 @@ const (
 	healthXH
 	healthWS
 	healthTR
+	healthWARP
 )
 
 var scannerBufPool = sync.Pool{
@@ -71,7 +70,6 @@ var scannerBufPool = sync.Pool{
 var pumpLogMu sync.Mutex
 var pumpNewline = [1]byte{'\n'}
 
-// SupervisorHealthSnapshot captures an atomic telemetry state of the child daemon.
 type SupervisorHealthSnapshot struct {
 	Running     bool   `json:"running"`
 	Ready       bool   `json:"ready"`
@@ -80,8 +78,10 @@ type SupervisorHealthSnapshot struct {
 	XHInbound   bool   `json:"xh_inbound_ok"`
 	WSInbound   bool   `json:"ws_inbound_ok"`
 	TRInbound   bool   `json:"tr_inbound_ok"`
+	WARPInbound bool   `json:"warp_inbound_ok"`
 	LastProbeAt string `json:"last_probe_at"`
-	ChildPID    int    `json:"child_pid,omitempty"`
+	XrayPID     int    `json:"xray_pid,omitempty"`
+	AetherPID   int    `json:"aether_pid,omitempty"`
 }
 
 type childExit struct {
@@ -90,8 +90,6 @@ type childExit struct {
 	err    error
 }
 
-// processReaper establishes an event-driven wait4(-1) dispatcher.
-// Eliminates race conditions with exec.Cmd and reaps adopted grandchildren natively.
 type processReaper struct {
 	mu      sync.Mutex
 	waiters map[int]chan childExit
@@ -159,16 +157,19 @@ func (r *processReaper) StartProcess(name string, argv []string, attr *os.ProcAt
 	return p, ch, nil
 }
 
-// Supervisor orchestrates the lifecycle and telemetry of the Xray daemon.
 type Supervisor struct {
 	binPath      string
 	configPath   string
 	assetDir     string
 	memLimitMB   int
 	maxProcs     int
+	aetherBin    string
+	aetherConfig string
+	aetherScan   string
 	xhAddr       string
 	wsAddr       string
 	trAddr       string
+	warpAddr     string
 	startTimeout time.Duration
 	stopTimeout  time.Duration
 
@@ -176,6 +177,7 @@ type Supervisor struct {
 
 	mu         sync.Mutex
 	proc       *os.Process
+	aetherProc *os.Process
 	startedAt  time.Time
 	lastUptime time.Duration
 	runCancel  context.CancelFunc
@@ -194,7 +196,6 @@ type Supervisor struct {
 	probeDialer *net.Dialer
 }
 
-// NewSupervisor instantiates the supervisor with zero-wait socket dialers and POSIX subreaper.
 func NewSupervisor() *Supervisor {
 	reaper, err := newProcessReaper()
 	if err != nil {
@@ -204,6 +205,9 @@ func NewSupervisor() *Supervisor {
 	bin := getEnv("BERMUDA_XRAY_BIN", defaultXrayBin)
 	cfg := getEnv("BERMUDA_XRAY_CONFIG", defaultConfigPath)
 	assets := getEnv("XRAY_LOCATION_ASSET", defaultAssetDir)
+	aetherBin := getEnv("BERMUDA_AETHER_BIN", defaultAetherBin)
+	aetherConfig := getEnv("AETHER_CONFIG", defaultAetherConfig)
+	aetherScan := getEnv("AETHER_SCAN", defaultAetherScan)
 
 	dialer := &net.Dialer{
 		Timeout:   probeDialTimeout,
@@ -227,9 +231,13 @@ func NewSupervisor() *Supervisor {
 		assetDir:     assets,
 		memLimitMB:   getEnvInt("BERMUDA_XRAY_MEM_MB", defaultXrayMemMB),
 		maxProcs:     getEnvInt("BERMUDA_XRAY_GOMAXPROCS", 0),
+		aetherBin:    aetherBin,
+		aetherConfig: aetherConfig,
+		aetherScan:   aetherScan,
 		xhAddr:       getEnv("BERMUDA_BACKEND_XH", defaultLoopbackXH),
 		wsAddr:       getEnv("BERMUDA_BACKEND_WS", defaultLoopbackWS),
 		trAddr:       getEnv("BERMUDA_BACKEND_TR", defaultLoopbackTR),
+		warpAddr:     getEnv("BERMUDA_BACKEND_WARP", defaultLoopbackWARP),
 		startTimeout: defaultStartTimeout,
 		stopTimeout:  defaultStopTimeout,
 		reaper:       reaper,
@@ -259,14 +267,22 @@ func (s *Supervisor) childEnv() []string {
 	return replaceEnv(os.Environ(), repl)
 }
 
-// Preflight executes syntax validation without polluting OS thread state.
+func (s *Supervisor) aetherEnv() []string {
+	repl := map[string]string{
+		"AETHER_NETSTACK_TCP_RX": "2097152",
+		"AETHER_NETSTACK_TCP_TX": "2097152",
+		"AETHER_CONFIG":          s.aetherConfig,
+		"AETHER_PROTOCOL":        "masque",
+	}
+	return replaceEnv(os.Environ(), repl)
+}
+
 func (s *Supervisor) Preflight() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return s.PreflightContext(ctx)
 }
 
-// PreflightContext validates Xray syntax safely via an isolated process pipe.
 func (s *Supervisor) PreflightContext(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
@@ -326,7 +342,6 @@ func (s *Supervisor) PreflightContext(parent context.Context) error {
 	return nil
 }
 
-// Run executes the continuous lifecycle supervision loop.
 func (s *Supervisor) Run(parent context.Context) error {
 	s.mu.Lock()
 	if !s.runStarted.CompareAndSwap(false, true) {
@@ -365,11 +380,11 @@ func (s *Supervisor) Run(parent context.Context) error {
 			backoff = initialBackoff
 		}
 		if err == nil {
-			err = errors.New("Xray exited normally")
+			err = errors.New("child processes exited normally")
 		}
 
 		delay := jitteredBackoff(backoff)
-		log.Printf("[Supervisor] Xray stopped after %s (err: %v); restart=%d in %s",
+		log.Printf("[Supervisor] Daemon group stopped after %s (err: %v); restart=%d in %s",
 			uptime.Round(time.Millisecond), err, s.restarts.Load(), delay.Round(time.Millisecond))
 
 		timer := time.NewTimer(delay)
@@ -420,7 +435,7 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 		return fmt.Errorf("create stderr pipe: %w", err)
 	}
 
-	attr := &os.ProcAttr{
+	xrayAttr := &os.ProcAttr{
 		Dir:   "/app",
 		Env:   s.childEnv(),
 		Files: []*os.File{nil, stdoutW, stderrW},
@@ -430,25 +445,85 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 		},
 	}
 
-	args := []string{s.binPath, "run", "-c", s.configPath}
-	proc, exitCh, err := s.reaper.StartProcess(s.binPath, args, attr)
-	if err != nil {
-		_ = stdoutR.Close()
-		_ = stdoutW.Close()
-		_ = stderrR.Close()
-		_ = stderrW.Close()
-		return fmt.Errorf("start Xray: %w", err)
+	hasAether := false
+	if _, statErr := os.Stat(s.aetherBin); statErr == nil {
+		hasAether = true
 	}
 
+	var aetherProc *os.Process
+	var aetherExitCh <-chan childExit
+	var aetherStdoutR, aetherStdoutW, aetherStderrR, aetherStderrW *os.File
+
+	if hasAether {
+		var pipeErr error
+		aetherStdoutR, aetherStdoutW, pipeErr = os.Pipe()
+		if pipeErr == nil {
+			aetherStderrR, aetherStderrW, pipeErr = os.Pipe()
+		}
+		if pipeErr != nil {
+			log.Printf("[Supervisor] Warning: Cannot create pipes for Aether: %v", pipeErr)
+			hasAether = false
+		}
+	}
+
+	if hasAether {
+		aetherAttr := &os.ProcAttr{
+			Dir:   "/data",
+			Env:   s.aetherEnv(),
+			Files: []*os.File{nil, aetherStdoutW, aetherStderrW},
+			Sys: &syscall.SysProcAttr{
+				Setpgid:   true,
+				Pdeathsig: syscall.SIGKILL,
+			},
+		}
+		aetherArgs := []string{
+			s.aetherBin,
+			"--bind", s.warpAddr,
+			"--masque",
+			"--h2",
+			"-4",
+			"--scan", s.aetherScan,
+			"--config", s.aetherConfig,
+		}
+		var startErr error
+		aetherProc, aetherExitCh, startErr = s.reaper.StartProcess(s.aetherBin, aetherArgs, aetherAttr)
+		_ = aetherStdoutW.Close()
+		_ = aetherStderrW.Close()
+		if startErr != nil {
+			log.Printf("[Supervisor] Warning: Failed to spawn Aether daemon: %v", startErr)
+			_ = aetherStdoutR.Close()
+			_ = aetherStderrR.Close()
+			aetherProc = nil
+			hasAether = false
+		} else {
+			log.Printf("[Supervisor] Aether daemon started pid=%d pgid=%d bind=%s",
+				aetherProc.Pid, aetherProc.Pid, s.warpAddr)
+		}
+	}
+
+	xrayArgs := []string{s.binPath, "run", "-c", s.configPath}
+	proc, exitCh, err := s.reaper.StartProcess(s.binPath, xrayArgs, xrayAttr)
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
+	if err != nil {
+		_ = stdoutR.Close()
+		_ = stderrR.Close()
+		if aetherProc != nil {
+			terminateProcessGroup(aetherProc.Pid, 200*time.Millisecond)
+			_ = aetherStdoutR.Close()
+			_ = aetherStderrR.Close()
+		}
+		return fmt.Errorf("start Xray: %w", err)
+	}
 
 	generation := s.startGeneration()
 	s.mu.Lock()
 	s.proc = proc
+	s.aetherProc = aetherProc
 	s.startedAt = time.Now()
 	s.lastUptime = 0
 	s.mu.Unlock()
+
 	pid := proc.Pid
 	log.Printf("[Supervisor] Xray started pid=%d pgid=%d GOMEMLIMIT=%dMiB GOMAXPROCS=%d",
 		pid, pid, s.memLimitMB, s.maxProcs)
@@ -457,6 +532,13 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 	pumpWG.Add(2)
 	go func() { defer pumpWG.Done(); s.pumpPipe(stdoutR, "[Xray-Out]") }()
 	go func() { defer pumpWG.Done(); s.pumpPipe(stderrR, "[Xray-Err]") }()
+
+	if hasAether && aetherProc != nil {
+		pumpWG.Add(2)
+		go func() { defer pumpWG.Done(); s.pumpPipe(aetherStdoutR, "[Aether-Out]") }()
+		go func() { defer pumpWG.Done(); s.pumpPipe(aetherStderrR, "[Aether-Err]") }()
+	}
+
 	pumpDone := make(chan struct{})
 	go func() { pumpWG.Wait(); close(pumpDone) }()
 
@@ -468,12 +550,37 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 	}()
 
 	var exit childExit
-	select {
-	case exit = <-exitCh:
-		terminateProcessGroup(pid, 200*time.Millisecond)
-	case <-ctx.Done():
-		terminateProcessGroup(pid, s.terminationGrace())
-		exit = <-exitCh
+	aetherPid := 0
+	if aetherProc != nil {
+		aetherPid = aetherProc.Pid
+	}
+
+	if aetherExitCh != nil {
+		select {
+		case exit = <-exitCh:
+			terminateProcessGroup(pid, 200*time.Millisecond)
+			if aetherPid > 0 {
+				terminateProcessGroup(aetherPid, 200*time.Millisecond)
+			}
+		case exit = <-aetherExitCh:
+			log.Printf("[Supervisor] Aether daemon pid=%d halted; tearing down Xray group...", aetherPid)
+			terminateProcessGroup(aetherPid, 200*time.Millisecond)
+			terminateProcessGroup(pid, 200*time.Millisecond)
+		case <-ctx.Done():
+			terminateProcessGroup(pid, s.terminationGrace())
+			if aetherPid > 0 {
+				terminateProcessGroup(aetherPid, s.terminationGrace())
+			}
+			exit = <-exitCh
+		}
+	} else {
+		select {
+		case exit = <-exitCh:
+			terminateProcessGroup(pid, 200*time.Millisecond)
+		case <-ctx.Done():
+			terminateProcessGroup(pid, s.terminationGrace())
+			exit = <-exitCh
+		}
 	}
 
 	cancelProbes()
@@ -485,26 +592,41 @@ func (s *Supervisor) startAndWait(ctx context.Context) error {
 	if s.proc == proc {
 		s.proc = nil
 	}
+	if s.aetherProc == aetherProc {
+		s.aetherProc = nil
+	}
 	s.mu.Unlock()
+
 	_ = proc.Release()
+	if aetherProc != nil {
+		_ = aetherProc.Release()
+	}
 
 	select {
 	case <-pumpDone:
 	case <-time.After(1500 * time.Millisecond):
 		_ = stdoutR.Close()
 		_ = stderrR.Close()
+		if aetherStdoutR != nil {
+			_ = aetherStdoutR.Close()
+			_ = aetherStderrR.Close()
+		}
 	}
 	_ = stdoutR.Close()
 	_ = stderrR.Close()
+	if aetherStdoutR != nil {
+		_ = aetherStdoutR.Close()
+		_ = aetherStderrR.Close()
+	}
 
 	if ctx.Err() != nil || s.stopRequested.Load() {
-		log.Printf("[Supervisor] Xray process group pid=%d stopped cleanly", pid)
+		log.Printf("[Supervisor] Child process groups (Xray=%d, Aether=%d) stopped cleanly", pid, aetherPid)
 		return nil
 	}
 	if exit.status.ExitStatus() != 0 {
-		return fmt.Errorf("Xray pid=%d exited with status %d", pid, exit.status.ExitStatus())
+		return fmt.Errorf("child process pid=%d exited with status %d", exit.pid, exit.status.ExitStatus())
 	}
-	return fmt.Errorf("Xray pid=%d exited normally", pid)
+	return fmt.Errorf("child process pid=%d exited normally", exit.pid)
 }
 
 func (s *Supervisor) startGeneration() uint64 {
@@ -531,7 +653,7 @@ func (s *Supervisor) endGeneration(generation uint64) {
 	}
 }
 
-func (s *Supervisor) commitProbe(generation uint64, xh, ws, tr bool) bool {
+func (s *Supervisor) commitProbe(generation uint64, xh, ws, tr, warp bool) bool {
 	var flags uint64 = healthRunning
 	if xh {
 		flags |= healthXH
@@ -542,7 +664,10 @@ func (s *Supervisor) commitProbe(generation uint64, xh, ws, tr bool) bool {
 	if tr {
 		flags |= healthTR
 	}
-	if xh && ws && tr {
+	if warp {
+		flags |= healthWARP
+	}
+	if xh && ws && tr && warp {
 		flags |= healthReady
 	}
 	for {
@@ -656,11 +781,11 @@ func (s *Supervisor) awaitReadiness(ctx context.Context, generation uint64) {
 		}
 
 		prior := s.state.Load()
-		xh, ws, tr := s.probeAll(ctx, generation)
-		isAllOk := xh && ws && tr
+		xh, ws, tr, warp := s.probeAll(ctx, generation)
+		isAllOk := xh && ws && tr && warp
 
-		if s.commitProbe(generation, xh, ws, tr) && isAllOk && prior&healthReady == 0 {
-			log.Printf("[Supervisor] All loopback inbounds ready after %s", time.Since(started).Round(time.Millisecond))
+		if s.commitProbe(generation, xh, ws, tr, warp) && isAllOk && prior&healthReady == 0 {
+			log.Printf("[Supervisor] All loopback inbounds ready (XH, WS, TR, WARP) after %s", time.Since(started).Round(time.Millisecond))
 		}
 		if !warned && time.Now().After(deadline) {
 			warned = true
@@ -677,19 +802,19 @@ func (s *Supervisor) awaitReadiness(ctx context.Context, generation uint64) {
 	}
 }
 
-func (s *Supervisor) probeAll(ctx context.Context, generation uint64) (bool, bool, bool) {
+func (s *Supervisor) probeAll(ctx context.Context, generation uint64) (bool, bool, bool, bool) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	state := s.state.Load()
 	if ctx.Err() != nil || state>>healthGenShift != generation || state&healthRunning == 0 {
-		return false, false, false
+		return false, false, false, false
 	}
 
 	results := make(chan struct {
 		index int
 		ok    bool
-	}, 3)
-	addresses := [3]string{s.xhAddr, s.wsAddr, s.trAddr}
+	}, 4)
+	addresses := [4]string{s.xhAddr, s.wsAddr, s.trAddr, s.warpAddr}
 	for i, address := range addresses {
 		go func(index int, addr string) {
 			results <- struct {
@@ -698,16 +823,16 @@ func (s *Supervisor) probeAll(ctx context.Context, generation uint64) (bool, boo
 			}{index: index, ok: s.probeTCP(ctx, addr)}
 		}(i, address)
 	}
-	var status [3]bool
+	var status [4]bool
 	for range addresses {
 		select {
 		case result := <-results:
 			status[result.index] = result.ok
 		case <-ctx.Done():
-			return false, false, false
+			return false, false, false, false
 		}
 	}
-	return status[0], status[1], status[2]
+	return status[0], status[1], status[2], status[3]
 }
 
 func (s *Supervisor) probeTCP(parent context.Context, addr string) bool {
@@ -721,33 +846,36 @@ func (s *Supervisor) probeTCP(parent context.Context, addr string) bool {
 	return true
 }
 
-func (s *Supervisor) ProbeNow() (bool, bool, bool) {
+func (s *Supervisor) ProbeNow() (bool, bool, bool, bool) {
 	state := s.state.Load()
 	if state&healthRunning == 0 {
-		return false, false, false
+		return false, false, false, false
 	}
 
 	last := s.lastProbeNS.Load()
 	if last != 0 && (time.Now().UnixNano()-last) < int64(minProbeNowInterval) {
-		return state&healthXH != 0, state&healthWS != 0, state&healthTR != 0
+		return state&healthXH != 0, state&healthWS != 0, state&healthTR != 0, state&healthWARP != 0
 	}
 
 	generation := state >> healthGenShift
-	xh, ws, tr := s.probeAll(context.Background(), generation)
-	if !s.commitProbe(generation, xh, ws, tr) {
-		return false, false, false
+	xh, ws, tr, warp := s.probeAll(context.Background(), generation)
+	if !s.commitProbe(generation, xh, ws, tr, warp) {
+		return false, false, false, false
 	}
-	return xh, ws, tr
+	return xh, ws, tr, warp
 }
 
-// Snapshot gathers point-in-time health telemetry across inbounds atomically.
 func (s *Supervisor) Snapshot() SupervisorHealthSnapshot {
 	state := s.state.Load()
 	s.mu.Lock()
 	started := s.startedAt
-	pid := 0
+	xrayPid := 0
 	if s.proc != nil {
-		pid = s.proc.Pid
+		xrayPid = s.proc.Pid
+	}
+	aetherPid := 0
+	if s.aetherProc != nil {
+		aetherPid = s.aetherProc.Pid
 	}
 	s.mu.Unlock()
 
@@ -767,12 +895,13 @@ func (s *Supervisor) Snapshot() SupervisorHealthSnapshot {
 		XHInbound:   state&healthXH != 0,
 		WSInbound:   state&healthWS != 0,
 		TRInbound:   state&healthTR != 0,
+		WARPInbound: state&healthWARP != 0,
 		LastProbeAt: lastProbeAt,
-		ChildPID:    pid,
+		XrayPID:     xrayPid,
+		AetherPID:   aetherPid,
 	}
 }
 
-// Stop initiates a bounded termination sequence with hard fallback against hung processes.
 func (s *Supervisor) Stop(grace time.Duration) {
 	if grace <= 0 {
 		grace = s.stopTimeout
