@@ -8,8 +8,7 @@
   "dns": {
     "servers": [
       "https+local://1.1.1.1/dns-query",
-      "1.1.1.1",
-      "8.8.8.8"
+      "1.1.1.1"
     ],
     "queryStrategy": "UseIPv4"
   },
@@ -150,7 +149,7 @@
       "tag": "direct",
       "protocol": "freedom",
       "settings": {
-        "domainStrategy": "UseIP"
+        "domainStrategy": "AsIs"
       }
     },
     {
@@ -164,7 +163,7 @@
     }
   ],
   "routing": {
-    "domainStrategy": "IPIfNonMatch",
+    "domainStrategy": "AsIs",
     "rules": [
       {
         "type": "field",
