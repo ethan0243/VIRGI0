@@ -17,12 +17,6 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
-// BERMUDA Stealth Gateway NG — Master Edge Entrypoint & Runtime Orchestrator
-// Dynamic cgroup v1/v2 Budgeting, 5-Stage Zero-Loss Drain, Go 1.24 Baseline
-// Invariant: Zero External Dependencies, Kernel-Tuned TCP Sockets, Leak-Free
-// ---------------------------------------------------------------------------
-
 const (
 	defaultPort            = "8080"
 	fallbackSelfMemMB      = 128
@@ -33,16 +27,13 @@ const (
 	httpDrainTimeout       = 10 * time.Second
 	edgeKeepAlivePeriod    = 15 * time.Second
 	drainPropagationWindow = 500 * time.Millisecond
-
-	// Linux-specific TCP socket option (0x12)
-	tcpUserTimeoutOpt = 18
+	tcpUserTimeoutOpt      = 18
 )
 
-// cgroupMemoryLimit reads cgroup v2 memory.max, falling back to v1 memory.limit_in_bytes.
 func cgroupMemoryLimit() (uint64, bool) {
 	candidates := []string{
-		"/sys/fs/cgroup/memory.max",                  // cgroup v2
-		"/sys/fs/cgroup/memory/memory.limit_in_bytes", // cgroup v1
+		"/sys/fs/cgroup/memory.max",
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes",
 	}
 	for _, p := range candidates {
 		data, err := os.ReadFile(p)
@@ -54,7 +45,7 @@ func cgroupMemoryLimit() (uint64, bool) {
 			continue
 		}
 		n, err := strconv.ParseUint(s, 10, 64)
-		if err != nil || n == 0 || n >= 1<<50 { // Ignore unlimited thresholds (~9.22e18)
+		if err != nil || n == 0 || n >= 1<<50 {
 			continue
 		}
 		return n, true
@@ -62,8 +53,6 @@ func cgroupMemoryLimit() (uint64, bool) {
 	return 0, false
 }
 
-// deriveMemoryBudget clamps allocations to a safe 67% ceiling of available container memory.
-// Reserves 33% headroom for kernel TCP socket buffers, Linux page cache, and stacks.
 func deriveMemoryBudget() (gwMB, xrayMB int) {
 	gwMB, xrayMB = fallbackSelfMemMB, fallbackXrayMemMB
 	limit, limited := cgroupMemoryLimit()
@@ -72,7 +61,6 @@ func deriveMemoryBudget() (gwMB, xrayMB int) {
 		gwMB = totalMB * gatewayMemPercent / 100
 		xrayMB = totalMB * xrayMemPercent / 100
 
-		// Enforce safety clamp: sum must not exceed 67% of container capacity
 		allowedMB := totalMB * 67 / 100
 		if gwMB < 32 {
 			gwMB = 32
@@ -91,13 +79,11 @@ func deriveMemoryBudget() (gwMB, xrayMB int) {
 	return gwMB, xrayMB
 }
 
-// applyMemoryCeiling configures Go runtime soft memory limit (GOMEMLIMIT) and GC percentage.
 func applyMemoryCeiling(selfMB int) {
 	debug.SetMemoryLimit(int64(selfMB) << 20)
 	debug.SetGCPercent(100)
 }
 
-// cgroupCPUQuota auto-detects CPU limits from cgroup v2 or v1 hierarchies.
 func cgroupCPUQuota() (float64, bool) {
 	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
 		f := strings.Fields(string(data))
@@ -122,7 +108,6 @@ func cgroupCPUQuota() (float64, bool) {
 	return 0, false
 }
 
-// applyGOMAXPROCS dynamically pins the Go scheduler to container CFS quotas.
 func applyGOMAXPROCS() int {
 	n := getEnvInt("BERMUDA_GOMAXPROCS", 0)
 	if n == 0 {
@@ -147,9 +132,7 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-// teardown executes an ordered, 5-stage graceful drain sequence within Railway's 25s budget.
 func teardown(srv *http.Server, gw *Gateway, sup *Supervisor, supCancel context.CancelFunc, graceful bool) {
-	// Railway provides 25s draining interval. We use 23s hard deadline for safety buffer.
 	hardDeadline := time.Now().Add(23 * time.Second)
 
 	gw.SetDraining()
@@ -185,7 +168,7 @@ func teardown(srv *http.Server, gw *Gateway, sup *Supervisor, supCancel context.
 	gw.CloseTunnels()
 	gw.CloseIdleBackendConns()
 
-	log.Println("[Gateway] Stage 5/5: Tearing down child Xray process group...")
+	log.Println("[Gateway] Stage 5/5: Tearing down child process groups...")
 	supCancel()
 	remainingSupTime := time.Until(hardDeadline)
 	if remainingSupTime <= 0 {
@@ -198,12 +181,10 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	log.Println("[Gateway] Initializing BERMUDA Stealth Gateway NG...")
 
-	// 1. Calculate dynamic memory ceilings and scheduler quotas from cgroup hierarchy
 	gwMB, xrayMB := deriveMemoryBudget()
 	applyMemoryCeiling(gwMB)
 	procs := applyGOMAXPROCS()
 
-	// Export derived parameters so supervisor propagates them to the child daemon
 	_ = os.Setenv("BERMUDA_XRAY_MEM_MB", strconv.Itoa(xrayMB))
 	_ = os.Setenv("BERMUDA_XRAY_GOMAXPROCS", strconv.Itoa(procs))
 	log.Printf("[Runtime] Dynamic memory ceiling: Gateway=%dMiB, Xray=%dMiB (GOGC=100) | GOMAXPROCS=%d",
@@ -211,41 +192,33 @@ func main() {
 
 	port := getEnv("PORT", defaultPort)
 
-	// 2. Instantiate supervisor and run preflight syntax validation
 	sup := NewSupervisor()
 	if err := sup.Preflight(); err != nil {
 		log.Printf("[Gateway] Warning: Supervisor preflight issue: %v. Continuing to start...", err)
 	}
 
-	// 3. Instantiate reverse proxy edge engine
 	gw := NewGateway(sup)
 
-	// 4. Decoupled Context Architecture:
-	// sigCtx handles termination signals from Railway PaaS / Docker.
-	// supCtx governs the Xray child supervisor independently.
 	sigCtx, stopSig := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stopSig()
 	supCtx, supCancel := context.WithCancel(context.Background())
 
-	// 5. Run supervisor loop in a dedicated background goroutine
 	supErrCh := make(chan error, 1)
 	go func() {
 		supErrCh <- sup.Run(supCtx)
 	}()
 
-	// 6. Configure HTTP edge server with line-rate socket tuning
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           gw.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,  // Protects against Slowloris header trickle attacks
-		ReadTimeout:       30 * time.Second,  // Bounded request header/body read
-		WriteTimeout:      0,                 // Must be 0 for long-lived full-duplex streams (XHTTP, WS)
-		IdleTimeout:       16 * time.Minute,  // 960s: safely exceeds Cloudflare 900s origin reuse limit
-		MaxHeaderBytes:    32 << 10,          // 32 KiB header limit
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       16 * time.Minute,
+		MaxHeaderBytes:    32 << 10,
 		ConnState:         gw.TrackConnState,
 	}
 
-	// 7. Bind TCP listener with modern KeepAliveConfig and TCP_USER_TIMEOUT
 	lc := net.ListenConfig{
 		KeepAliveConfig: net.KeepAliveConfig{
 			Enable:   true,
@@ -256,7 +229,6 @@ func main() {
 		Control: func(network, address string, c syscall.RawConn) error {
 			var controlErr error
 			err := c.Control(func(fd uintptr) {
-				// Set TCP_USER_TIMEOUT (90s). Accepted child sockets inherit this on Linux.
 				if e := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, tcpUserTimeoutOpt, 90000); e != nil {
 					controlErr = e
 				}
@@ -281,7 +253,6 @@ func main() {
 		}
 	}()
 
-	// 8. Await termination signals or fatal process errors
 	select {
 	case err := <-serverErrCh:
 		log.Printf("[Gateway] Fatal: HTTP server failure: %v", err)
@@ -297,7 +268,6 @@ func main() {
 		log.Println("[Gateway] Termination signal intercepted. Commencing graceful teardown...")
 	}
 
-	// 9. Execute 5-stage graceful drain sequence
 	teardown(srv, gw, sup, supCancel, true)
 	log.Println("[Gateway] BERMUDA Stealth Gateway shutdown complete. Ports released cleanly. Exit 0.")
 }
