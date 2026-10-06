@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 # ==============================================================================
-# BERMUDA x AETHER Core Gateway - All-in-One Self-Contained Container
+# BERMUDA x AETHER Core Gateway - Hardened Production Container (Netstack Boost)
 # Architecture: Multi-Stage Hybrid (Xray-core + Aether MASQUE Core + Caddy Ingress)
 # Base System: Ubuntu 24.04 LTS (Native GLIBC 2.39 Engine)
+# Optimization: TCP Netstack 2MB Flow-Control Buffers
 # ==============================================================================
 
 FROM ubuntu:24.04 AS builder
@@ -43,12 +44,15 @@ FROM ubuntu:24.04
 
 LABEL maintainer="BERMUDA Institutional Core" \
       description="Zero-Defect VLESS/Trojan to WARP MASQUE Chained Outbound Engine" \
-      version="10.0-production"
+      version="10.1-boosted"
 
+# تنظیم بافرهای 2MB لایه TCP Netstack و پیش‌فرض‌های محیطی
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     XRAY_LOCATION_ASSET=/usr/local/share/xray \
-    AETHER_CONFIG=/data/aether.toml
+    AETHER_CONFIG=/data/aether.toml \
+    AETHER_NETSTACK_TCP_RX=2097152 \
+    AETHER_NETSTACK_TCP_TX=2097152
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -95,6 +99,8 @@ export AETHER_BIND="${AETHER_BIND:-127.0.0.1:1819}"
 export AETHER_CONFIG="${AETHER_CONFIG:-/data/aether.toml}"
 export AETHER_SCAN="${AETHER_SCAN:-balanced}"
 export AETHER_PROTOCOL="${AETHER_PROTOCOL:-masque}"
+export AETHER_NETSTACK_TCP_RX="${AETHER_NETSTACK_TCP_RX:-2097152}"
+export AETHER_NETSTACK_TCP_TX="${AETHER_NETSTACK_TCP_TX:-2097152}"
 
 CADDY_PID=""
 XRAY_PID=""
@@ -139,7 +145,7 @@ cat <<CADDYCONF > /etc/caddy/Caddyfile
 }
 CADDYCONF
 
-# اجرای Aether با سوییچ --h2 برای برقراری تونل پرسرعت TCP روی ریلوی
+echo "[ORCHESTRATOR] Spawning Aether MASQUE Core (TCP Netstack Boost: 2MB Buffers)..."
 /usr/local/bin/aether \
     --bind "${AETHER_BIND}" \
     --${AETHER_PROTOCOL} \
