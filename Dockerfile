@@ -157,6 +157,14 @@ trap 'cleanup 129' SIGHUP
 
 mkdir -p /etc/caddy /data /var/log/gateway
 
+# مکانیزم خودترمیمی برای تضمین عدم تداخل پورت‌ها
+if [ -f /etc/xray/config.json ]; then
+    sed -i 's/"port": 8080/"port": 10001/g' /etc/xray/config.json 2>/dev/null || true
+    sed -i 's/"port": 8081/"port": 10002/g' /etc/xray/config.json 2>/dev/null || true
+    sed -i 's/"port": 8082/"port": 10003/g' /etc/xray/config.json 2>/dev/null || true
+    sed -i 's/"listen": "0.0.0.0"/"listen": "127.0.0.1"/g' /etc/xray/config.json 2>/dev/null || true
+fi
+
 echo "[ORCHESTRATOR] Synthesizing dynamic reverse-proxy matrix for Port :${PORT}..."
 cat <<CADDYCONF > /etc/caddy/Caddyfile
 {
@@ -170,13 +178,13 @@ cat <<CADDYCONF > /etc/caddy/Caddyfile
     }
 
     # Ingress Route 1: VLESS WebSocket Pipeline
-    reverse_proxy /api/v1/live* 127.0.0.1:8080
+    reverse_proxy /api/v1/live* 127.0.0.1:10001
 
     # Ingress Route 2: Trojan WebSocket Pipeline
-    reverse_proxy /api/v1/gateway* 127.0.0.1:8081
+    reverse_proxy /api/v1/gateway* 127.0.0.1:10002
 
     # Ingress Route 3: VLESS XHTTP Pipeline
-    reverse_proxy /api/v1/sync* 127.0.0.1:8082
+    reverse_proxy /api/v1/sync* 127.0.0.1:10003
 
     # Decoy Masquerade Asset: Anti-Probing 200 OK Response
     root * /var/www/html
@@ -190,7 +198,6 @@ echo "[ORCHESTRATOR] Spawning Aether MASQUE Core on ${AETHER_BIND}..."
     --${AETHER_PROTOCOL} \
     -4 \
     --scan "${AETHER_SCAN}" \
-    --quick-reconnect \
     --config "${AETHER_CONFIG}" &
 AETHER_PID=$!
 
