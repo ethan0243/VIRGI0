@@ -21,12 +21,6 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
-// BERMUDA Stealth Gateway NG — L7 Streaming Edge & Camouflage Shield
-// Linux Kernel splice(2) Zero-Copy TCP Relay & Byte-Exact OpenResty Emulation
-// Invariant: Zero External Dependencies, Zero-Leak Camouflage, Drain-Safe
-// ---------------------------------------------------------------------------
-
 const (
 	defaultPathXH = "/api/v1/sync"
 	defaultPathWS = "/api/v1/live"
@@ -53,7 +47,6 @@ const (
 
 var openrestyModTime = time.Date(2021, time.August, 6, 21, 32, 34, 0, time.UTC)
 
-// Official OpenResty 1.19.9.1 index.html (exactly 1097 bytes, LF)
 const openrestyWelcomeHTML = "<!DOCTYPE html>\n" +
 	"<html>\n" +
 	"<head>\n" +
@@ -83,7 +76,6 @@ const openrestyWelcomeHTML = "<!DOCTYPE html>\n" +
 	"</body>\n" +
 	"</html>\n"
 
-// Official OpenResty 1.19.9.1 50x.html (exactly 982 bytes, LF)
 const openresty50xHTML = "<!DOCTYPE html>\n" +
 	"<html>\n" +
 	"<head>\n" +
@@ -630,7 +622,8 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snap := g.sup.Snapshot()
-	snap.ChildPID = 0
+	snap.XrayPID = 0
+	snap.AetherPID = 0
 	draining := g.draining.Load()
 	healthy := !draining && snap.Running && snap.Ready
 
