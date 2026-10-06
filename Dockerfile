@@ -66,11 +66,14 @@ FROM ubuntu:24.04
 
 LABEL maintainer="BERMUDA Institutional Core" \
       description="Hardened L7 Edge Gateway & WARP MASQUE Chained Outbound Engine" \
-      version="3.0-production"
+      version="3.1-production"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     PORT=8080 \
+    BERMUDA_AETHER_EXIT_LOC=US \
+    AETHER_SCAN=balanced \
+    AETHER_PROTOCOL=masque \
     XRAY_LOCATION_ASSET=/usr/local/share/xray \
     BERMUDA_XRAY_BIN=/usr/local/bin/xray \
     BERMUDA_XRAY_CONFIG=/app/config.json \
