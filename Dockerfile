@@ -2,15 +2,17 @@
 # ==============================================================================
 # BERMUDA x AETHER Core Gateway - All-in-One Self-Contained Container
 # Architecture: Multi-Stage Hybrid (Xray-core + Aether MASQUE Core + Caddy Ingress)
+# Base System: Ubuntu 24.04 LTS (Native GLIBC 2.39 Engine)
 # Target Environment: Railway Cloud PaaS / GitHub Automated CI/CD
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
 # STAGE 1: Artifact Fetcher & Validation Engine
 # ------------------------------------------------------------------------------
-FROM debian:bookworm-slim AS builder
+FROM ubuntu:24.04 AS builder
 
 ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -50,9 +52,9 @@ RUN set -eux; \
 FROM caddy:2-alpine AS caddy-source
 
 # ------------------------------------------------------------------------------
-# STAGE 3: Final Hardened Runtime Environment
+# STAGE 3: Final Hardened Runtime Environment (Ubuntu 24.04 with GLIBC 2.39)
 # ------------------------------------------------------------------------------
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 LABEL maintainer="BERMUDA Institutional Core" \
       description="Zero-Defect VLESS/Trojan to WARP MASQUE Chained Outbound Engine" \
@@ -157,7 +159,7 @@ trap 'cleanup 129' SIGHUP
 
 mkdir -p /etc/caddy /data /var/log/gateway
 
-# مکانیزم خودترمیمی برای تضمین عدم تداخل پورت‌ها
+# مکانیزم خودترمیمی برای پورت‌های داخلی
 if [ -f /etc/xray/config.json ]; then
     sed -i 's/"port": 8080/"port": 10001/g' /etc/xray/config.json 2>/dev/null || true
     sed -i 's/"port": 8081/"port": 10002/g' /etc/xray/config.json 2>/dev/null || true
@@ -227,7 +229,7 @@ echo "[ORCHESTRATOR] Performing non-blocking data-plane probe on ${AETHER_BIND}.
         sleep 1
     done
     if [ "$READY" -eq 0 ]; then
-        echo "[HEALTHCHECK] WARP initialization taking longer than usual; scanner running in background."
+        echo "[HEALTHCHECK] WARP initialization in progress; scanner active."
     fi
 ) &
 
