@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # ==============================================================================
-# BERMUDA x AETHER Core Gateway - Hardened Production Container (Netstack Boost)
+# BERMUDA x AETHER Core Gateway - Hardened Production Container
 # Architecture: Multi-Stage Hybrid (Xray-core + Aether MASQUE Core + Caddy Ingress)
-# Base System: Ubuntu 24.04 LTS (Native GLIBC 2.39 Engine)
-# Optimization: TCP Netstack 2MB Flow-Control Buffers
+# Camouflage: High-Fidelity Infrastructure Documentation Landing Page
+# Optimization: Netstack 2MB Buffers + Zero-RTT DNS Routing Strategy
 # ==============================================================================
 
 FROM ubuntu:24.04 AS builder
@@ -42,11 +42,10 @@ FROM caddy:2-alpine AS caddy-source
 
 FROM ubuntu:24.04
 
-LABEL maintainer="BERMUDA Institutional Core" \
-      description="Zero-Defect VLESS/Trojan to WARP MASQUE Chained Outbound Engine" \
-      version="10.1-boosted"
+LABEL maintainer="AetherCore Distributed Systems" \
+      description="High-Throughput Asynchronous Network Ingress & Transit Node" \
+      version="10.2-stealth"
 
-# تنظیم بافرهای 2MB لایه TCP Netstack و پیش‌فرض‌های محیطی
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     XRAY_LOCATION_ASSET=/usr/local/share/xray \
@@ -69,26 +68,60 @@ COPY --from=caddy-source /usr/bin/caddy /usr/local/bin/caddy
 RUN mkdir -p /etc/xray /data /var/www/html /var/log/gateway /etc/caddy \
     && chmod -R 777 /data
 
-RUN printf '%s\n' \
-'<!DOCTYPE html>' \
-'<html lang="en">' \
-'<head>' \
-'    <meta charset="UTF-8">' \
-'    <meta name="viewport" content="width=device-width, initial-scale=1.0">' \
-'    <title>Edge Node Gateway</title>' \
-'    <style>' \
-'        body { background:#0a0a0a; color:#737373; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }' \
-'        .box { border:1px solid #262626; padding:24px 32px; border-radius:8px; background:#111111; }' \
-'        .status { color:#10b981; font-weight:bold; }' \
-'    </style>' \
-'</head>' \
-'<body>' \
-'    <div class="box">' \
-'        <p><span class="status">●</span> CLOUD_INGRESS_ACTIVE</p>' \
-'        <p style="font-size:12px; margin-bottom:0;">Service Health: Nominal · 200 OK</p>' \
-'    </div>' \
-'</body>' \
-'</html>' > /var/www/html/index.html
+# صفحه دکوی استتار سازمانی کاملاً واقعی (Realistic High-Fidelity Decoy Page)
+RUN cat <<'EOF' > /var/www/html/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AetherCore · Next-Gen Distributed Transit Framework</title>
+    <style>
+        :root { --bg: #090a0f; --card: #12141c; --border: #1f2333; --accent: #38bdf8; --text: #f1f5f9; --muted: #94a3b8; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; }
+        header { border-bottom: 1px solid var(--border); padding: 18px 40px; display: flex; justify-content: space-between; align-items: center; background: rgba(9,10,15,0.8); backdrop-filter: blur(12px); }
+        .logo { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.5px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+        .status-badge { background: rgba(16,185,129,0.12); color: #10b981; border: 1px solid rgba(16,185,129,0.3); padding: 4px 12px; border-radius: 99px; font-size: 0.75rem; font-weight: 600; font-family: monospace; }
+        main { flex: 1; max-width: 1000px; margin: 60px auto; padding: 0 24px; text-align: center; }
+        h1 { font-size: 2.8rem; font-weight: 800; letter-spacing: -1.2px; margin-bottom: 16px; background: linear-gradient(180deg, #fff 0%, #94a3b8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        p.lead { font-size: 1.15rem; color: var(--muted); max-width: 650px; margin: 0 auto 40px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; text-align: left; margin-top: 40px; }
+        .card { background: var(--card); border: 1px solid var(--border); padding: 24px; border-radius: 14px; }
+        .card h3 { font-size: 1rem; color: var(--accent); margin-bottom: 8px; font-weight: 600; }
+        .card p { font-size: 0.88rem; color: var(--muted); }
+        footer { border-top: 1px solid var(--border); padding: 24px; text-align: center; font-size: 0.8rem; color: var(--muted); font-family: monospace; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">◈ AetherCore Engine</div>
+        <div class="status-badge">● CLUSTER NODE ONLINE · 200 OK</div>
+    </header>
+    <main>
+        <h1>Asynchronous Micro-Transit Gateway</h1>
+        <p class="lead">High-performance edge router orchestrating encrypted packet streaming, micro-routing pipelines, and zero-loss multiplexing.</p>
+        <div class="grid">
+            <div class="card">
+                <h3>RFC 9298 MASQUE Ingress</h3>
+                <p>Multiplexed Application Substrate delivering high-throughput datagram transit with low overhead and kernel-level socket isolation.</p>
+            </div>
+            <div class="card">
+                <h3>Zero-RTT Edge Caching</h3>
+                <p>Distributed Anycast interconnect fabric executing instantaneous DNS and payload routing across global infrastructure zones.</p>
+            </div>
+            <div class="card">
+                <h3>Hardened Pipeline Security</h3>
+                <p>TLS 1.3 cryptographic termination, automatic flow-control windows, and strict isolated process supervision.</p>
+            </div>
+        </div>
+    </main>
+    <footer>
+        Node ID: rlwy-prod-transit-01 · API Gateway v10.2 · Apache-2.0 Open Infrastructure
+    </footer>
+</body>
+</html>
+EOF
 
 RUN cat <<'EOF' > /entrypoint.sh
 #!/usr/bin/env bash
